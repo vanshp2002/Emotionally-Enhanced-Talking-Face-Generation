@@ -84,3 +84,8 @@ hparams = HParams(
 	beta_1=0.999,
 	beta_2=0.999,
 )
+
+def hparams_debug_string():
+	values = hparams.values()
+	hp = ["  %s: %s" % (name, values[name]) for name in sorted(values) if name != "sentences"]
+	return "Hyperparameters:\n" + "\n".join(hp)
