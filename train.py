@@ -63,3 +63,190 @@ emotion_dict = {'ANG':0, 'DIS':1, 'FEA':2, 'HAP':3, 'NEU':4, 'SAD':5}
 intensity_dict = {'XX':0, 'LO':1, 'MD':2, 'HI':3}
 emonet_T = 5
 
+class Dataset(object):
+    def __init__(self, split, val=False):
+        #self.all_videos = get_image_list(args.data_root, split)
+        # self.all_videos = [join(args.data_root, f) for f in os.listdir(args.data_root) if isdir(join(args.data_root, f))]
+        self.filelist = []
+        self.all_videos = [f for f in os.listdir(args.data_root) if isdir(join(args.data_root, f))]
+
+        for filename in self.all_videos:
+            #print(splitext(filename))
+            labels = splitext(filename)[0].split('_')
+            emotion = emotion_dict[labels[2]]
+            
+            emotion_intensity = intensity_dict[labels[3]]
+            if val:
+                if emotion_intensity != 3:
+                    continue
+            
+            self.filelist.append((filename, emotion, emotion_intensity))
+
+        self.filelist = np.array(self.filelist)
+        print('Num files: ', len(self.filelist))
+
+        # to apply same augmentation for all the 10 frames (5 reference and 5 ground truth)
+        target = {}
+        for i in range(1, 2*emonet_T):
+            target['image' + str(i)] = 'image'
+        
+        self.augments = A.Compose([
+                        A.RandomBrightnessContrast(p=0.4),    
+                        A.RandomGamma(p=0.4),    
+                        A.CLAHE(p=0.4),
+                        A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=50, val_shift_limit=50, p=0.4),  
+                        A.ChannelShuffle(p=0.4), 
+                        A.RGBShift(p=0.4),
+                        A.RandomBrightness(p=0.4),
+                        A.RandomContrast(p=0.4),
+                        A.GaussNoise(var_limit=(10.0, 50.0), p=0.4),
+                    ], additional_targets=target, p=0.8)
+    
+    def augmentVideo(self, video):
+        args = {}
+        args['image'] = video[0, :, :, :]
+        for i in range(1, 2*emonet_T):
+            args['image' + str(i)] = video[i, :, :, :]
+        result = self.augments(**args)
+        video[0, :, :, :] = result['image']
+        for i in range(1, 2*emonet_T):
+            video[i, :, :, :] = result['image' + str(i)]
+        return video
+
+    def get_frame_id(self, frame):
+        return int(basename(frame).split('.')[0])
+
+    def get_window(self, start_frame):
+        start_id = self.get_frame_id(start_frame)
+        vidname = dirname(start_frame)
+
+        window_fnames = []
+        for frame_id in range(start_id, start_id + syncnet_T):
+            frame = join(vidname, '{}.jpg'.format(frame_id))
+            if not isfile(frame):
+                return None
+            window_fnames.append(frame)
+        return window_fnames
+
+    def read_window(self, window_fnames):
+        if window_fnames is None: return None
+        window = []
+        for fname in window_fnames:
+            img = cv2.imread(fname)
+            if img is None:
+                return None
+            try:
+                img = cv2.resize(img, (hparams.img_size, hparams.img_size))
+            except Exception as e:
+                return None
+
+            window.append(img)
+
+        return window
+
+    def crop_audio_window(self, spec, start_frame):
+        if type(start_frame) == int:
+            start_frame_num = start_frame
+        else:
+            start_frame_num = self.get_frame_id(start_frame) # 0-indexing ---> 1-indexing
+        start_idx = int(80. * (start_frame_num / float(hparams.fps)))
+        
+        end_idx = start_idx + syncnet_mel_step_size
+
+        return spec[start_idx : end_idx, :]
+
+    def get_segmented_mels(self, spec, start_frame):
+        mels = []
+        assert syncnet_T == 5
+        start_frame_num = self.get_frame_id(start_frame) + 1 # 0-indexing ---> 1-indexing
+        if start_frame_num - 2 < 0: return None
+        for i in range(start_frame_num, start_frame_num + syncnet_T):
+            m = self.crop_audio_window(spec, i - 2)
+            if m.shape[0] != syncnet_mel_step_size:
+                return None
+            mels.append(m.T)
+
+        mels = np.asarray(mels)
+
+        return mels
+
+    def prepare_window(self, window):
+        # 3 x T x H x W
+        x = np.asarray(window) / 255.
+        x = np.transpose(x, (3, 0, 1, 2))
+
+        return x
+
+    def __len__(self):
+        return len(self.all_videos)
+
+    def __getitem__(self, idx):
+        while 1:
+            idx = random.randint(0, len(self.filelist) - 1)
+            filename = self.filelist[idx]
+            vidname = filename[0]
+            emotion = int(filename[1])
+            emotion = to_categorical(emotion, num_classes=6)
+
+            img_names = list(glob(join(args.data_root, vidname, '*.jpg')))
+
+            if len(img_names) <= 3 * syncnet_T:
+                continue
+            
+            img_name = random.choice(img_names)
+            wrong_img_name = random.choice(img_names)
+            while wrong_img_name == img_name:
+                wrong_img_name = random.choice(img_names)
+
+            window_fnames = self.get_window(img_name)
+            wrong_window_fnames = self.get_window(wrong_img_name)
+            if window_fnames is None or wrong_window_fnames is None:
+                continue
+
+            window = self.read_window(window_fnames)
+            if window is None:
+                continue
+
+            wrong_window = self.read_window(wrong_window_fnames)
+            if wrong_window is None:
+                continue
+
+            try:
+                wavpath = join(args.data_root, vidname, "audio.wav")
+                wav = audio.load_wav(wavpath, hparams.sample_rate)
+
+                orig_mel = audio.melspectrogram(wav).T
+            except Exception as e:
+                continue
+
+            mel = self.crop_audio_window(orig_mel.copy(), img_name)
+            
+            if (mel.shape[0] != syncnet_mel_step_size):
+                continue
+
+            indiv_mels = self.get_segmented_mels(orig_mel.copy(), img_name)
+            if indiv_mels is None: continue
+
+            window = np.asarray(window)
+            y = window.copy()
+            # window[:, :, window.shape[2]//2:] = 0.
+            # we need to generate whole face as we are incorporating emotion
+            window[:, :, :] = 0.
+
+            wrong_window = np.asarray(wrong_window)
+            conact_for_aug = np.concatenate([y, wrong_window], axis=0)
+
+            aug_results = self.augmentVideo(conact_for_aug)
+            y, wrong_window = np.split(aug_results, 2, axis=0)
+
+            y = np.transpose(y, (3, 0, 1, 2)) / 255
+            window = np.transpose(window, (3, 0, 1, 2))
+            wrong_window = np.transpose(wrong_window, (3, 0, 1, 2)) / 255
+
+            x = np.concatenate([window, wrong_window], axis=0)
+
+            x = torch.FloatTensor(x)
+            mel = torch.FloatTensor(mel.T).unsqueeze(0)
+            indiv_mels = torch.FloatTensor(indiv_mels).unsqueeze(1)
+            y = torch.FloatTensor(y)
+            return x, indiv_mels, mel, y, emotion
