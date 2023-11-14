@@ -68,3 +68,65 @@ def init_weights(m):
 def enableGrad(model, requires_grad):
     for p in model.parameters():
         p.requires_grad_(requires_grad)
+
+def train():
+    args = initParams()
+    
+    trainDset = Dataset(args)
+
+    train_loader = torch.utils.data.DataLoader(trainDset,
+                                               batch_size=args.batch_size, 
+                                               shuffle=True,
+                                               drop_last=True,
+                                               **args.kwargs)
+    
+    device_ids = list(range(torch.cuda.device_count()))
+    
+    disc_emo = emo_disc.DISCEMO().to(args.device)
+    disc_emo.apply(init_weights)
+    #disc_emo = nn.DataParallel(disc_emo, device_ids)
+
+    emo_loss_disc = nn.CrossEntropyLoss()
+
+    num_batches = len(train_loader)
+    print(args.batch_size, num_batches)
+
+    global_step = 0
+    
+    for epoch in range(args.num_epochs):
+        print('Epoch: {}'.format(epoch))
+        prog_bar = tqdm(enumerate(train_loader))
+        running_loss = 0.
+        for step, (x, y) in prog_bar:
+            video, emotion = x.to(args.device), y.to(args.device)
+
+            disc_emo.train()
+
+            disc_emo.opt.zero_grad() # .module is because of nn.DataParallel 
+
+            class_real = disc_emo(video)
+
+            loss = emo_loss_disc(class_real, torch.argmax(emotion, dim=1))
+
+            running_loss += loss.item()
+
+            loss.backward()
+            disc_emo.opt.step() # .module is because of nn.DataParallel 
+
+            if global_step % 1000 == 0:
+                print('Saving the network')
+                torch.save(disc_emo.state_dict(), os.path.join(args.out_path, f'disc_emo_{global_step}.pth'))
+                print('Network has been saved')
+            
+            prog_bar.set_description('classification Loss: {}'.format(running_loss / (step + 1)))
+
+            global_step += 1
+
+        writer.add_scalar("classification Loss", running_loss/num_batches, epoch)
+        
+        disc_emo.scheduler.step() # .module is because of nn.DataParallel 
+
+if __name__ == "__main__":
+
+    writer = SummaryWriter('runs/emo_disc_exp4')
+    train()
