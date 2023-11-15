@@ -250,3 +250,46 @@ class Dataset(object):
             indiv_mels = torch.FloatTensor(indiv_mels).unsqueeze(1)
             y = torch.FloatTensor(y)
             return x, indiv_mels, mel, y, emotion
+
+def save_sample_images(x, g, gt, global_step, checkpoint_dir):
+    x = (x.detach().cpu().numpy().transpose(0, 2, 3, 4, 1) * 255.).astype(np.uint8)
+    g = (g.detach().cpu().numpy().transpose(0, 2, 3, 4, 1) * 255.).astype(np.uint8)
+    gt = (gt.detach().cpu().numpy().transpose(0, 2, 3, 4, 1) * 255.).astype(np.uint8)
+
+    refs, inps = x[..., 3:], x[..., :3]
+    folder = join(checkpoint_dir, "samples_step{:09d}".format(global_step))
+    if not os.path.exists(folder): os.mkdir(folder)
+    collage = np.concatenate((refs, inps, g, gt), axis=-2)
+    for batch_idx, c in enumerate(collage):
+        for t in range(len(c)):
+            cv2.imwrite('{}/{}_{}.jpg'.format(folder, batch_idx, t), c[t])
+
+logloss = nn.BCELoss()
+def cosine_loss(a, v, y):
+    d = nn.functional.cosine_similarity(a, v)
+    loss = logloss(d.unsqueeze(1), y)
+
+    return loss
+
+def freezeNet(network):
+    for p in network.parameters():
+        p.requires_grad = False
+
+def unfreezeNet(network):
+    for p in network.parameters():
+        p.requires_grad = True
+
+device = torch.device("cuda" if use_cuda else "cpu")
+device_ids = list(range(torch.cuda.device_count()))
+
+syncnet = SyncNet().to(device)
+# syncnet = nn.DataParallel(syncnet, device_ids)
+freezeNet(syncnet)
+
+disc_emo = emo_disc.DISCEMO().to(device)
+# disc_emo = nn.DataParallel(disc_emo, device_ids)
+disc_emo.load_state_dict(torch.load(args.emotion_disc_path))
+emo_loss_disc = nn.CrossEntropyLoss()
+
+perceptual_loss = utils.perceptionLoss(device)
+recon_loss = nn.L1Loss()
