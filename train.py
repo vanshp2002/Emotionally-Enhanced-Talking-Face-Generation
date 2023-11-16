@@ -293,3 +293,105 @@ emo_loss_disc = nn.CrossEntropyLoss()
 
 perceptual_loss = utils.perceptionLoss(device)
 recon_loss = nn.L1Loss()
+
+
+def train(device, model, train_data_loader, test_data_loader, optimizer,
+          checkpoint_dir=None, checkpoint_interval=None, nepochs=None):
+    print(f'num_batches:{len(train_data_loader)}')
+    global global_step, global_epoch
+    resumed_step = global_step
+    while global_epoch < nepochs:
+        print('Starting Epoch: {}'.format(global_epoch))
+        running_sync_loss, running_l1_loss = 0., 0.
+        running_ploss, running_loss_de_c = 0., 0.
+        running_loss_fake_c, running_loss_real_c = 0., 0.
+        prog_bar = tqdm(enumerate(train_data_loader))
+        for step, (x, indiv_mels, mel, gt, emotion) in prog_bar:
+            model.train()
+            disc_emo.train()
+            freezeNet(disc_emo)
+            optimizer.zero_grad()
+
+            # Move data to CUDA device
+            x = x.to(device)
+            mel = mel.to(device)
+            indiv_mels = indiv_mels.to(device)
+            gt = gt.to(device) 
+            emotion = emotion.to(device)
+            
+
+            #### training generator/Wav2lip model
+            g = model(indiv_mels, x, emotion) 
+
+            # emo_label is obtained from audio_encoding (not required for out model)
+
+            emotion_ = emotion.unsqueeze(1).repeat(1, 5, 1)
+            emotion_ = torch.cat([emotion_[:, i] for i in range(emotion_.size(1))], dim=0)
+
+            de_c = disc_emo.forward(g)
+            loss_de_c = emo_loss_disc(de_c, torch.argmax(emotion, dim=1))
+            
+            if hparams.syncnet_wt > 0.:
+                sync_loss = get_sync_loss(mel, g)
+            else:
+                sync_loss = 0.
+
+            l1loss = recon_loss(g, gt)
+            ploss =  perceptual_loss.calculatePerceptionLoss(g,gt)
+
+            loss = hparams.syncnet_wt * sync_loss + hparams.pl_wt * ploss + hparams.emo_wt * loss_de_c  
+            loss += (1 - hparams.syncnet_wt - hparams.emo_wt - hparams.pl_wt) * l1loss
+
+            loss.backward()
+            optimizer.step()
+
+            unfreezeNet(disc_emo)
+
+            if hparams.syncnet_wt > 0.:
+                running_sync_loss += sync_loss.item()
+            else:
+                running_sync_loss += 0.
+            running_l1_loss += l1loss.item()
+            running_ploss += ploss.item()
+            running_loss_de_c += loss_de_c.item()
+            
+            #### training emotion_disc model
+            disc_emo.opt.zero_grad()
+            g = g.detach()
+            class_real = disc_emo(gt) # for ground-truth
+        
+            loss_real_c = emo_loss_disc(class_real, torch.argmax(emotion, dim=1))
+            loss_real_c.backward()
+            disc_emo.opt.step()
+
+            running_loss_real_c += loss_real_c.item()
+
+            if global_step == 1 or global_step % checkpoint_interval == 0:
+                save_sample_images(x, g, gt, global_step, checkpoint_dir)
+
+            global_step += 1
+            cur_session_steps = global_step - resumed_step
+
+            if global_step == 1 or global_step % checkpoint_interval == 0:
+                save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch)
+                save_checkpoint(disc_emo, disc_emo.opt, global_step,checkpoint_dir, global_epoch, prefix='disc_emo_')
+
+            if global_step == 1 or global_step % hparams.eval_interval == 0:
+                with torch.no_grad():
+                    average_sync_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
+
+                    if average_sync_loss < .75:
+                        hparams.set_hparam('syncnet_wt', 0.03) # without image GAN a lesser weight is sufficient
+
+            prog_bar.set_description('L1: {:.4f}, Ploss: {:.4f}, Sync Loss: {:.4f}, de_c_loss: {:.4f} | loss_real_c: {:.4f}'.format(running_l1_loss / (step + 1),
+                                                                    running_ploss / (step + 1),
+                                                                    running_sync_loss / (step + 1),
+                                                                    running_loss_de_c / (step + 1),
+                                                                    running_loss_real_c / (step + 1)))
+
+        writer.add_scalar("Sync_Loss/train_gen", running_sync_loss/len(train_data_loader), global_epoch)
+        writer.add_scalar("L1_Loss/train_gen", running_l1_loss/len(train_data_loader), global_epoch)
+        writer.add_scalar("Ploss/train_gen", running_ploss/len(train_data_loader), global_epoch)
+        writer.add_scalar("Loss_de_c/train_gen", running_loss_de_c/len(train_data_loader), global_step)
+        writer.add_scalar("Loss_real_c/train_disc", running_loss_real_c/len(train_data_loader), global_step)
+        global_epoch += 1
