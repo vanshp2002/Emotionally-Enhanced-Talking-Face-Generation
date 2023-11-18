@@ -36,14 +36,10 @@ def initParams():
     args.steplr = 200
 
     args.filters = [64, 128, 256, 512, 512]
-    #-----------------------------------------#
-    #           Reproducible results          #
-    #-----------------------------------------#
     os.environ['PYTHONHASHSEED'] = str(args.seed)
     np.random.seed(args.seed)
     rn.seed(args.seed)
     torch.manual_seed(args.seed)
-    #-----------------------------------------#
    
     if not os.path.exists(args.out_path):
         os.makedirs(args.out_path)
@@ -102,7 +98,7 @@ def train():
 
             disc_emo.train()
 
-            disc_emo.opt.zero_grad() # .module is because of nn.DataParallel 
+            disc_emo.opt.zero_grad()  
 
             class_real = disc_emo(video)
 
@@ -111,7 +107,7 @@ def train():
             running_loss += loss.item()
 
             loss.backward()
-            disc_emo.opt.step() # .module is because of nn.DataParallel 
+            disc_emo.opt.step()  
 
             if global_step % 1000 == 0:
                 print('Saving the network')
@@ -124,7 +120,7 @@ def train():
 
         writer.add_scalar("classification Loss", running_loss/num_batches, epoch)
         
-        disc_emo.scheduler.step() # .module is because of nn.DataParallel 
+        disc_emo.scheduler.step()  
 
 if __name__ == "__main__":
 
