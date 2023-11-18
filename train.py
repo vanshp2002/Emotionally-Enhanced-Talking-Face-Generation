@@ -372,10 +372,6 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             global_step += 1
             cur_session_steps = global_step - resumed_step
 
-            if global_step == 1 or global_step % checkpoint_interval == 0:
-                save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch)
-                save_checkpoint(disc_emo, disc_emo.opt, global_step,checkpoint_dir, global_epoch, prefix='disc_emo_')
-
             if global_step == 1 or global_step % hparams.eval_interval == 0:
                 with torch.no_grad():
                     average_sync_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
@@ -388,10 +384,4 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
                                                                     running_sync_loss / (step + 1),
                                                                     running_loss_de_c / (step + 1),
                                                                     running_loss_real_c / (step + 1)))
-
-        writer.add_scalar("Sync_Loss/train_gen", running_sync_loss/len(train_data_loader), global_epoch)
-        writer.add_scalar("L1_Loss/train_gen", running_l1_loss/len(train_data_loader), global_epoch)
-        writer.add_scalar("Ploss/train_gen", running_ploss/len(train_data_loader), global_epoch)
-        writer.add_scalar("Loss_de_c/train_gen", running_loss_de_c/len(train_data_loader), global_step)
-        writer.add_scalar("Loss_real_c/train_disc", running_loss_real_c/len(train_data_loader), global_step)
         global_epoch += 1
