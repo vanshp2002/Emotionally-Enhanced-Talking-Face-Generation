@@ -86,6 +86,13 @@ emo_loss_disc = nn.CrossEntropyLoss()
 perceptual_loss = utils.perceptionLoss(device)
 recon_loss = nn.L1Loss()
 
+def get_sync_loss(mel, g):
+    g = g[:, :, :, g.size(3)//2:]
+    g = torch.cat([g[:, :, i] for i in range(syncnet_T)], dim=1)
+    # B, 3 * T, H//2, W
+    a, v = syncnet(mel, g)
+    y = torch.ones(g.size(0), 1).float().to(device)
+    return cosine_loss(a, v, y)
 
 def train(device, model, train_data_loader, test_data_loader, optimizer,
           checkpoint_dir=None, checkpoint_interval=None, nepochs=None):
