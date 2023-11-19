@@ -89,7 +89,6 @@ recon_loss = nn.L1Loss()
 def get_sync_loss(mel, g):
     g = g[:, :, :, g.size(3)//2:]
     g = torch.cat([g[:, :, i] for i in range(syncnet_T)], dim=1)
-    # B, 3 * T, H//2, W
     a, v = syncnet(mel, g)
     y = torch.ones(g.size(0), 1).float().to(device)
     return cosine_loss(a, v, y)
