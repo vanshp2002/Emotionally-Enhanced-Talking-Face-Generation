@@ -93,8 +93,7 @@ def get_sync_loss(mel, g):
     y = torch.ones(g.size(0), 1).float().to(device)
     return cosine_loss(a, v, y)
 
-def train(device, model, train_data_loader, test_data_loader, optimizer,
-          checkpoint_dir=None, checkpoint_interval=None, nepochs=None):
+def train(device, model, train_data_loader, test_data_loader, optimizer, nepochs=None):
     print(f'num_batches:{len(train_data_loader)}')
     global global_step, global_epoch
     resumed_step = global_step
@@ -180,3 +179,31 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
                                                                     running_loss_de_c / (step + 1),
                                                                     running_loss_real_c / (step + 1)))
         global_epoch += 1
+
+if __name__ == "__main__":
+
+    full_dataset = Dataset('train')
+    train_size = int(0.95 * len(full_dataset))
+    test_size = len(full_dataset) - train_size
+    train_dataset, test_dataset = torch.utils.data.random_split(full_dataset, [train_size, test_size], generator=torch.Generator().manual_seed(42))
+
+    train_data_loader = data_utils.DataLoader(
+        train_dataset, batch_size=hparams.batch_size, shuffle=True,
+        num_workers=hparams.num_workers)
+
+    test_data_loader = data_utils.DataLoader(
+        test_dataset, batch_size=hparams.batch_size,
+        num_workers=4)
+
+    device = torch.device("cuda" if use_cuda else "cpu")
+
+    # Model
+    model = Wav2Lip().to(device)
+
+    optimizer = optim.Adam([p for p in model.parameters() if p.requires_grad],
+                           lr=hparams.initial_learning_rate, betas=(0.5,0.999))
+
+
+    # Train!
+    train(device, model, train_data_loader, test_data_loader, optimizer,
+              nepochs=hparams.nepochs)
